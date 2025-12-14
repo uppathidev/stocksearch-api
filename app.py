@@ -2,8 +2,26 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 import yfinance as yf
 import requests
+import json
+import math
+from typing import Any
 
 app = FastAPI()
+
+
+# Helper function to convert NaN and Inf values to None for JSON serialization
+def convert_nan_inf_to_none(obj: Any) -> Any:
+    """Recursively convert NaN and Inf values to None."""
+    if isinstance(obj, dict):
+        return {key: convert_nan_inf_to_none(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_nan_inf_to_none(item) for item in obj]
+    elif isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    else:
+        return obj
 
 
 # Helper: Find ticker symbol from company name using Yahoo search
@@ -38,7 +56,7 @@ def get_stock_search(q: str):
         stock = yf.Ticker(symbol)
         info = stock.info
 
-        return {
+        result = {
             "symbol": symbol,
             "longName": info.get('longName'),
             "previousClose": info.get('previousClose'),
@@ -57,6 +75,7 @@ def get_stock_search(q: str):
             "dividendYield": info.get('dividendYield'),
             "targetEstimate": info.get('targetMeanPrice')
         }
+        return convert_nan_inf_to_none(result)
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -67,7 +86,7 @@ def get_stock_summary(symbol: str):
     try:
         stock = yf.Ticker(symbol)
         info = stock.info
-        return {
+        result = {
             "previousClose": info.get('previousClose'),
             "open": info.get('open'),
             "bid": info.get('bid'),
@@ -84,6 +103,7 @@ def get_stock_summary(symbol: str):
             "dividendYield": info.get('dividendYield'),
             "targetEstimate": info.get('targetMeanPrice')
         }
+        return convert_nan_inf_to_none(result)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -97,7 +117,8 @@ def get_historical_data(symbol: str, timeframe: str):
         }
         stock = yf.Ticker(symbol)
         hist = stock.history(period=period_map.get(timeframe, '1y'), interval='1d')
-        return hist.reset_index().to_dict(orient='records')
+        result = hist.reset_index().to_dict(orient='records')
+        return convert_nan_inf_to_none(result)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -111,7 +132,7 @@ def get_stock_news(symbol: str):
         if not news:
             raise HTTPException(status_code=404, detail="No news available for the given stock.")
 
-        return news
+        return convert_nan_inf_to_none(news)
     except HTTPException:
         raise
     except Exception as e:
@@ -121,11 +142,12 @@ def get_stock_news(symbol: str):
 def get_financials(symbol: str):
     try:
         stock = yf.Ticker(symbol)
-        return {
+        result = {
             "income_stmt": stock.income_stmt.to_dict(),
             "balance_sheet": stock.balance_sheet.to_dict(),
             "cash_flow": stock.cashflow.to_dict()
         }
+        return convert_nan_inf_to_none(result)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -133,10 +155,11 @@ def get_financials(symbol: str):
 def get_holdings(symbol: str):
     try:
         stock = yf.Ticker(symbol)
-        return {
+        result = {
             "institutional_holders": stock.institutional_holders.to_dict(),
             "major_holders": stock.major_holders.to_dict()
         }
+        return convert_nan_inf_to_none(result)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -149,10 +172,11 @@ def get_analysis(symbol: str):
         recommendations = stock.recommendations.reset_index().to_dict(orient='records')
         earnings_estimates = stock.earnings_dates.reset_index().to_dict(orient='records')
 
-        return {
+        result = {
             "recommendations": recommendations,
             "earnings_estimates": earnings_estimates
         }
+        return convert_nan_inf_to_none(result)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     
@@ -179,7 +203,7 @@ def get_dividends(symbol: str):
     try:
         stock = yf.Ticker(symbol)
         dividends = stock.dividends.reset_index().to_dict(orient='records')
-        return dividends
+        return convert_nan_inf_to_none(dividends)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     
@@ -188,7 +212,7 @@ def get_earnings(symbol: str):
     try:
         stock = yf.Ticker(symbol)
         earnings = stock.earnings_dates.reset_index().to_dict(orient='records')
-        return earnings
+        return convert_nan_inf_to_none(earnings)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -197,7 +221,7 @@ def get_splits(symbol: str):
     try:
         stock = yf.Ticker(symbol)
         splits = stock.splits.reset_index().to_dict(orient='records')
-        return splits
+        return convert_nan_inf_to_none(splits)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -205,8 +229,18 @@ def get_splits(symbol: str):
 def get_sustainability(symbol: str):
     try:
         stock = yf.Ticker(symbol)
-        sustainability = stock.sustainability.to_dict()
-        return sustainability
+        try:
+            sustainability = stock.sustainability
+            if sustainability is None or (isinstance(sustainability, dict) and len(sustainability) == 0):
+                raise HTTPException(status_code=404, detail="Sustainability data not available for this stock")
+            return convert_nan_inf_to_none(sustainability.to_dict() if hasattr(sustainability, 'to_dict') else sustainability)
+        except HTTPException:
+            raise
+        except Exception as inner_e:
+            # Sustainability data may not be available for all stocks
+            raise HTTPException(status_code=404, detail=f"Sustainability data not available for this stock")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -221,7 +255,7 @@ def get_options(symbol: str):
                 "calls": stock.option_chain(date).calls.to_dict(orient='records'),
                 "puts": stock.option_chain(date).puts.to_dict(orient='records')
             }
-        return options_chain
+        return convert_nan_inf_to_none(options_chain)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -230,7 +264,7 @@ def get_insider(symbol: str):
     try:
         stock = yf.Ticker(symbol)
         insider = stock.insider_transactions.reset_index().to_dict(orient='records')
-        return insider
+        return convert_nan_inf_to_none(insider)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -258,7 +292,7 @@ def get_profile(symbol: str):
             "city": info.get("city"),
             "country": info.get("country"),
         }
-        return profile
+        return convert_nan_inf_to_none(profile)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
